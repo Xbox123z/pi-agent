@@ -124,7 +124,7 @@ impl PoolProvider {
             let cool = match status {
                 429 => Duration::from_secs(retry_after.unwrap_or(60).min(3600)),
                 401 | 403 => Duration::from_secs(3600), // 鉴权问题：长冷却
-                s if s >= 500 => Duration::from_secs((2u64.pow(s.fails.min(6))).min(300)),
+                st if st >= 500 => Duration::from_secs((2u64.pow(s.fails.min(6))).min(300)),
                 _ => Duration::from_secs(10),
             };
             s.cooldown_until = Some(Instant::now() + cool);

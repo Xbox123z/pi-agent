@@ -175,10 +175,8 @@ async fn main() -> Result<()> {
         Cmd::Run { goal, model, yes, max_steps } => {
             let mut agent = build_agent(model, yes, max_steps).await?;
             let hooks = CliHooks { auto_yes: yes };
-            let out = agent.run(&goal, &hooks).await?;
-            if !out.is_empty() {
-                // on_text 已经打印过；这里避免重复输出
-            }
+            // on_text 钩子已实时打印模型输出，这里只取最终返回值以传播错误
+            let _ = agent.run(&goal, &hooks).await?;
         }
         Cmd::Chat { model, yes } => {
             let mut agent = build_agent(model.clone(), yes, 64).await?;
