@@ -1,102 +1,235 @@
-# Pi Agent (π)
+<div align="center">
 
-> 用 Rust 写的开源轻量 AI Agent —— 架构上尽可能模拟 [DSH (DeepSeek Harness)](https://github.com/) 的分层设计，内置**账号池插件**接入各大平台的**免费模型**。
+# 🦀 Pi Agent (π)
 
-## 特性
+**用 Rust 编写的高性能轻量 AI Agent —— 深度还原 DeepSeek Harness (DSH) 架构，内置免费模型账号池与子代理编排**
 
-- 🦀 **纯 Rust**，单二进制，冷启动毫秒级
-- 🧩 **插件架构**：事件总线 + 插件注册工具/模型 Provider（内置 `pi-pool` 插件）
-- 🔄 **账号池**：多平台多 Key，自动轮换、429/5xx 冷却、失败转移
-- 🆓 **免费模型**：内置 OpenRouter(:free) / Groq / Gemini / Cerebras / GitHub Models / Mistral / Ollama 预设，`pool:free-auto` 一键自动路由
-- 🛠️ **工具系统**：`fs_read` / `fs_list` / `fs_grep`（自动放行）、`fs_write` / `shell` / `web_fetch`（确认制）
-- 🧠 **记忆**：会话历史 + 自动摘要压缩，JSON 持久化
-- ⚡ **流式输出**：SSE 增量解析，打字机效果（工具调用增量同步累积）
-- 🛡️ **策略闸门**：deny > allow > 工具默认策略，支持通配（如 `fs_*`）
+[下载二进制 (Releases)](https://github.com/Xbox123z/pi-agent/releases) • [快速开始](#-快速开始) • [DSH架构映射](#-架构对照-deepseek-harness) • [账号池指南](#-免费模型账号池-pi-pool)
 
-## 架构（对照 DSH）
+[![CI Status](https://github.com/Xbox123z/pi-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Xbox123z/pi-agent/actions)
+[![Release](https://img.shields.io/github/v/release/Xbox123z/pi-agent?color=orange&logo=rust)](https://github.com/Xbox123z/pi-agent/releases)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-1.70%2B-brightgreen.svg?logo=rust)](https://www.rust-lang.org/)
 
-| DSH 概念 | Pi Agent 实现 |
-|---|---|
-| Host runtime | `pi-core::agent::Agent` 主循环 |
-| 模型路由 | `pi-core::router::ModelRouter`（`provider:model` 寻址） |
-| Provider | `pi-core::model::ModelProvider` trait + OpenAI 兼容实现 |
-| 工具 + 审批 | `pi-core::tools`（JSON Schema + allow/ask/deny 策略） |
-| 插件系统 | `pi-core::plugins::PluginHost`（事件总线 + 扩展点注册） |
-| 会话/记忆 | `pi-core::session` / `pi-core::memory`（摘要压缩） |
-| Harness 账号池插件 | `plugins/pi-pool`（轮换、冷却、失败转移、free-auto） |
+</div>
 
-## 快速开始
+---
 
-**编译前提**：Rust 1.70+，且需要 C/C++ linker（Windows 装
-[VS Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)；
-macOS `xcode-select --install`；Linux `build-essential`）。
+## 📖 项目简介
+
+**Pi Agent (π)** 是一个纯 Rust 打造、原生零垃圾回收开销的 AI 智能代理引擎。
+
+设计上完整借鉴并模拟了 **DeepSeek Harness (DSH)** 的核心分层思想：
+- **解耦的运行时**：Host Runtime 负责工具调度与确认闸门，LLM 负责逻辑决策。
+- **内置账号池插件 (`pi-pool`)**：无需昂贵账单，直接聚合 OpenRouter、Groq、Gemini、Cerebras 等平台的免费模型额度，支持自动轮换与指数避退冷却。
+- **子代理委派 (`subagent`)**：支持主代理将子任务委托给拥有独立会话记忆的独立 Agent，杜绝上下文污染与无限递归。
+- **原生 SSE 流式输出**：字符级打字机实时刷新，工具增量调用无缝重组。
+
+---
+
+## 🏛️ 架构对照 (DeepSeek Harness)
+
+Pi Agent 严格遵循 DSH 的模块化解耦规范，其核心映射如下：
+
+```text
+┌────────────────────────────────────────────────────────────────┐
+│                       Pi Agent Runtime                         │
+├────────────────────────────────┬───────────────────────────────┤
+│    DSH (DeepSeek Harness)      │         Pi Agent (Rust)       │
+├────────────────────────────────┼───────────────────────────────┤
+│ Host / Orchestrator            │ pi-core::agent::Agent         │
+│ Model Router (provider:model)  │ pi-core::router::ModelRouter  │
+│ Model Provider Interface       │ pi-core::model::ModelProvider │
+│ Policy Guard (allow/ask/deny)  │ pi-core::tools::Policy        │
+│ Tool Execution Context         │ pi-core::tools::ToolContext   │
+│ Plugin Host & Event Bus        │ pi-core::plugins::PluginHost  │
+│ Session & Memory Compactor     │ pi-core::memory::Memory       │
+│ Subagent Delegation            │ pi-core::subagent             │
+│ Builtin Free Model Pool        │ plugins::pi-pool              │
+└────────────────────────────────┴───────────────────────────────┘
+```
+
+```text
+       ┌───────────────┐
+       │   CLI / User  │
+       └───────┬───────┘
+               │ Goal & Interaction
+       ┌───────▼───────────────────────────┐
+       │        Agent Loop (pi-core)       │◄──────┐
+       └───────┬───────────────────────────┘       │
+               │                                   │ Tool
+       ┌───────┴───────┐                   ┌───────┴──────┐
+       │ Model Router  │                   │ Policy Gate  │
+       └───────┬───────┘                   └───────▲──────┘
+               │ Resolve                           │ Verify
+       ┌───────▼────────────────┐          ┌───────┴──────┐
+       │   pi-pool (Plugin)     │          │ Safe Tools   │
+       │  • Account Rotation    │          │ • fs_read    │
+       │  • Auto Retry-After    │          │ • fs_write   │
+       │  • Multi-Platform Free │          │ • shell      │
+       └────────────────────────┘          │ • subagent   │
+                                           └──────────────┘
+```
+
+---
+
+## ✨ 核心特性
+
+- ⚡ **闪电冷启动**：单独立可执行二进制，启动时间仅需几毫秒，内存占用极低。
+- 🔄 **智能账号池 (`pi-pool`)**：
+  - 支持多平台、多 API Key 配置，轮询调度（Round-Robin）。
+  - **429 自动冷却**：精准解析上游 `Retry-After` 头，遭遇限流自动切换下一可用 Key。
+  - **智能模型寻址 (`pool:free-auto`)**：开箱即用，优先匹配免额度模型，遇到故障自动转移。
+- 🤖 **子代理系统 (`subagent`)**：
+  - 继承父代理的工具库与模型能力，但拥有独立的 `Memory` 空间。
+  - 三重递归防护机制（深度上限、自动剥离 `subagent` 工具、受控委派）。
+- 🛡️ **严格安全策略系统**：
+  - `allow`（直通执行，如 `fs_read`）、`ask`（终端交互确认，如 `shell`）、`deny`（绝对禁止）。
+  - 支持通配符规则（例如 `fs_*` 全放行）。
+- 🌊 **字符级流式体验**：
+  - 采用 Server-Sent Events (SSE) 协议解码。
+  - 模型边思索边实时打字输出，复杂工具参数分片自动按序号重装。
+
+---
+
+## 🚀 快速开始
+
+### 方式 A：直接下载各平台二进制
+
+从 [Releases 页面](https://github.com/Xbox123z/pi-agent/releases) 获取构建好的二进制：
+- **Linux x86_64**: `pi-linux-x86_64`
+- **macOS Apple Silicon**: `pi-macos-aarch64`
+- **Windows x64**: `pi-windows-x86_64.exe`
+
+下载后直接重命名为 `pi` 或 `pi.exe` 并置入系统环境变量目录即可。
+
+---
+
+### 方式 B：从源码编译
+
+**前置要求**：Rust 1.70+ 及 C/C++ 链接器（Windows 需 Visual C++ Build Tools，macOS 需 Command Line Tools）。
 
 ```bash
+# 1. 克隆代码库
+git clone https://github.com/Xbox123z/pi-agent.git
+cd pi-agent
+
+# 2. 编译发布版本
 cargo build --release
-./target/release/pi pool presets        # 看看支持哪些免费上游
-./target/release/pi pool add openrouter sk-or-xxxx   # 加一个 key
-./target/release/pi run "读取 Cargo.toml 并总结这个项目" -y
-./target/release/pi chat                 # 交互模式
+
+# 3. 运行体验
+./target/release/pi --help
 ```
 
-也可以直接用环境变量（无需 add）：
+---
+
+## 🛠️ 使用指南
+
+### 1. 快速使用免费模型
+
+无需繁琐设置，直接使用预设的免费上游平台：
 
 ```bash
-$env:OPENROUTER_API_KEY="sk-or-..."   # Windows PowerShell
-pi run "hello" -y                      # 自动导入到池中
+# 查看所有支持的免费上游平台及免费模型名称
+pi pool presets
+
+# 方式一：设置系统环境变量（免添加，自动识别入池）
+# Windows PowerShell:
+$env:OPENROUTER_API_KEY = "sk-or-v1-xxxxxx"
+# Linux / macOS:
+export OPENROUTER_API_KEY="sk-or-v1-xxxxxx"
+
+# 方式二：命令行手动添加密钥到池中
+pi pool add openrouter sk-or-v1-xxxxxx
+pi pool add groq gsk_xxxxxx
+
+# 健康检查当前池内账号连通性
+pi pool check
+
+# 列出池内所有账号及脱敏信息
+pi pool list
 ```
 
-默认模型是 `pool:free-auto`：在所有池内账号间轮换，优先选名字带 `free` 的模型，遇到 429/5xx 自动冷却并切换下一个账号。
+---
 
-## 账号池命令
+### 2. 执行任务 (Run)
 
 ```bash
-pi pool presets            # 列出预设上游（含申请地址、环境变量名）
-pi pool list               # 列出账号（key 脱敏）
-pi pool add <preset> <key> [--base-url <url>]
-pi pool remove <id>
-pi pool check              # 健康检查
+# 运行一次性任务（默认启用 pool:free-auto 智能免费路由）
+pi run "阅读当前目录下的 Cargo.toml，并总结这个项目的核心依赖"
+
+# 自动放行需确认的工具操作（免交互确认）
+pi run "在当前目录创建一个 hello.txt 并写入欢迎语" -y
+
+# 指定特定模型
+pi run "写一个快速排序算法" -m pool:deepseek/deepseek-chat-v3.1:free
 ```
 
-池数据存于 `~/.pi/pool.json`（**不要提交到 git**，已内置 .gitignore 规则示例）。
+---
 
-## 切换模型
+### 3. 交互式终端会话 (Chat)
 
 ```bash
-pi run "..." -m pool:free-auto                          # 默认
-pi run "..." -m pool:deepseek/deepseek-chat-v3.1:free   # 指定模型
-pi run "..." -m direct:my-model                         # 直连 provider（config 里配的）
+# 进入全功能交互式对话
+pi chat
+
+# 在会话中可随时使用指令：
+π> /models               # 列出当前所有已注册模型
+π> /model groq:llama-3.3-70b-versatile  # 实时切换模型
+π> /quit                 # 退出会话
 ```
 
-chat 模式中用 `/model <name>` 切换，`/models` 列出全部。
+---
 
-## 配置
+## ⚙️ 配置文件说明
 
-全局 `~/.pi/config.toml` + 项目 `.pi/config.toml`（项目覆盖全局）：
+Pi Agent 支持分层配置机制：
+1. 全局配置：`~/.pi/config.toml`
+2. 项目级覆盖：当前工作区目录 `.pi/config.toml`
 
 ```toml
+# 默认采用的路由模型
 default_model = "pool:free-auto"
 
-[provider]              # 可选：不走池的直连上游
-base_url = "https://api.deepseek.com/v1"
-api_key = "sk-..."
-model = "deepseek-chat"
-
+# 安全策略规则配置
 [policy]
-allow = ["fs_*"]        # 免确认
-deny  = ["shell"]       # 永拒
+allow = ["fs_read", "fs_list", "fs_grep"]   # 允许静默执行的工具
+deny  = []                                  # 严格禁止的工具（如 ["shell"]）
+
+# 自建/直连上游配置（可选）
+[provider]
+base_url = "https://api.deepseek.com/v1"
+api_key  = "sk-xxxxxxxx"
+model    = "deepseek-chat"
 ```
 
-环境变量兜底：`PI_BASE_URL` / `PI_API_KEY` / `PI_MODEL`。
+---
 
-## 路线图
+## 📦 项目模块结构
 
-- [x] 流式输出（SSE）—— `ModelProvider::stream` + `hooks.on_delta`
-- [ ] 子代理（subagent）与工作流编排
-- [ ] WASM 沙箱工具
-- [ ] PHP 绑定（通过 FFI / 内嵌 CLI）
-- [ ] TUI 界面（ratatui）
+```text
+pi-agent/
+├── Cargo.toml               # 工作区清单 (Workspace Resolver v2)
+├── crates/
+│   ├── pi-core/             # 运行时核心库
+│   │   ├── src/agent.rs     # 主循环调度器 (LLM ⇄ Tools 往返)
+│   │   ├── src/router.rs    # 多 Provider 模型解析器
+│   │   ├── src/model.rs     # 统一协议抽象 (Messages, Chunks, ToolSpecs)
+│   │   ├── src/openai.rs    # OpenAI 兼容层与 SSE 流式解析
+│   │   ├── src/tools.rs     # 工具库声明与 Policy 策略闸门
+│   │   ├── src/subagent.rs  # 子代理派发与上下文隔离
+│   │   ├── src/memory.rs    # 会话记忆维护与智能压缩折叠
+│   │   └── src/plugins.rs   # 插件宿主与广播事件总线
+│   └── pi-cli/              # 命令行交互前端
+│       └── src/main.rs      # CLI 子命令入口与打字机输出终端
+└── plugins/
+    └── pi-pool/             # 账号池核心插件
+        ├── src/lib.rs       # 账号轮换、429冷却与 free-auto 调度
+        └── src/presets.rs   # 涵盖各大主流免费服务商端点预设
+```
 
-## License
+---
 
-MIT
+## 📄 许可证
+
+本项目依据 [MIT License](LICENSE) 协议完全开源。
