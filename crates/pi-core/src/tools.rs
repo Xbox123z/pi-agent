@@ -23,6 +23,17 @@ pub enum Policy {
 pub struct ToolContext {
     pub cwd: std::path::PathBuf,
     pub policy: crate::config::PolicyConfig,
+    /// 子代理派发器（由 Agent 注入；支持 `subagent` 工具）。
+    /// 用 trait object 而非直接持有 Agent，避免循环依赖与 async 跨线程问题。
+    pub subagent: Option<std::sync::Arc<dyn crate::subagent::SubagentInvoker>>,
+    /// 当前 Agent 深度（顶层 = 0），用于限制子代理递归。
+    pub depth: u32,
+}
+
+impl ToolContext {
+    pub fn new(cwd: std::path::PathBuf, policy: crate::config::PolicyConfig) -> Self {
+        Self { cwd, policy, subagent: None, depth: 0 }
+    }
 }
 
 #[async_trait]
@@ -61,6 +72,13 @@ impl ToolRegistry {
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools.get(name).cloned()
     }
+    /// 移除一个工具（子代理用它去掉 `subagent`，防止无限递归）。
+    pub fn remove(&mut self, name: &str) {
+        self.tools.remove(name);
+    }
+    pub fn names(&self) -> Vec<String> {
+        self.tools.keys().cloned().collect()
+    }
     pub fn specs(&self) -> Vec<ToolSpec> {
         self.tools.values().map(|t| t.spec()).collect()
     }
@@ -96,6 +114,7 @@ pub fn builtin_tools() -> ToolRegistry {
     r.register(Arc::new(Grep));
     r.register(Arc::new(Shell));
     r.register(Arc::new(WebFetch));
+    r.register(Arc::new(crate::subagent::SubagentTool));
     r
 }
 

@@ -32,6 +32,8 @@ pub struct Agent {
     pub model: String,
     pub system_prompt: String,
     pub policy: crate::config::PolicyConfig,
+    /// 递归深度（顶层 = 0，子代理逐级 +1）。
+    pub depth: u32,
 }
 
 impl Agent {
@@ -146,7 +148,15 @@ impl Agent {
 
         let tool = self.tools.get(&call.name)
             .ok_or_else(|| anyhow!("unknown tool `{}`", call.name))?;
-        let ctx = ToolContext { cwd: self.session.cwd.clone(), policy: self.policy.clone() };
+
+        let mut ctx = ToolContext::new(self.session.cwd.clone(), self.policy.clone());
+        ctx.depth = self.depth;
+        // 注入子代理派发器（子代理自身已移除该工具，故不会无限递归）
+        if self.tools.get("subagent").is_some() && self.depth < crate::subagent::MAX_DEPTH {
+            ctx.subagent = Some(std::sync::Arc::new(crate::subagent::AgentInvoker {
+                deps: crate::subagent::AgentDeps::from_agent(self),
+            }));
+        }
         tool.execute(args, &ctx).await
     }
 }

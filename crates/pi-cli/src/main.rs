@@ -170,6 +170,7 @@ async fn build_agent(model: Option<String>, yes: bool, max_steps: usize) -> Resu
             .unwrap_or_else(|| "pool:free-auto".to_string()),
         system_prompt: SYSTEM_PROMPT.to_string(),
         policy: cfg.policy,
+        depth: 0,
     })
 }
 

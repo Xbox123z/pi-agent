@@ -19,4 +19,5 @@ pub mod openai;
 pub mod plugins;
 pub mod router;
 pub mod session;
+pub mod subagent;
 pub mod tools;
