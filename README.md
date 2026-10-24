@@ -10,6 +10,7 @@
 - 🆓 **免费模型**：内置 OpenRouter(:free) / Groq / Gemini / Cerebras / GitHub Models / Mistral / Ollama 预设，`pool:free-auto` 一键自动路由
 - 🛠️ **工具系统**：`fs_read` / `fs_list` / `fs_grep`（自动放行）、`fs_write` / `shell` / `web_fetch`（确认制）
 - 🧠 **记忆**：会话历史 + 自动摘要压缩，JSON 持久化
+- ⚡ **流式输出**：SSE 增量解析，打字机效果（工具调用增量同步累积）
 - 🛡️ **策略闸门**：deny > allow > 工具默认策略，支持通配（如 `fs_*`）
 
 ## 架构（对照 DSH）
@@ -90,7 +91,7 @@ deny  = ["shell"]       # 永拒
 
 ## 路线图
 
-- [ ] 流式输出（SSE）
+- [x] 流式输出（SSE）—— `ModelProvider::stream` + `hooks.on_delta`
 - [ ] 子代理（subagent）与工作流编排
 - [ ] WASM 沙箱工具
 - [ ] PHP 绑定（通过 FFI / 内嵌 CLI）
