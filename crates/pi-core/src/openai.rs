@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::model::{ChatMessage, ChatResponse, ModelProvider, ToolCall, ToolSpec, Usage};
+use tokio::sync::mpsc;
 
 #[derive(Clone)]
 pub struct OpenAiCompat {
@@ -112,6 +113,119 @@ impl std::fmt::Display for HttpError {
 }
 impl std::error::Error for HttpError {}
 
+/// 发送一次 **流式** chat/completions 请求，解析 SSE `data:` 行并推送增量。
+///
+/// 返回累积出的完整 ChatResponse（含 tool_calls）。
+pub async fn post_chat_stream(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+    headers: &[(String, String)],
+    body: &Value,
+    tx: &tokio::sync::mpsc::Sender<crate::model::StreamChunk>,
+) -> Result<ChatResponse> {
+    use crate::model::{StreamChunk, ToolCall};
+    use futures_util::StreamExt;
+
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let mut body = body.clone();
+    body["stream"] = json!(true);
+
+    let mut req = client.post(&url).json(&body).header("Accept", "text/event-stream");
+    if !api_key.is_empty() {
+        req = req.bearer_auth(api_key);
+    }
+    for (k, v) in headers {
+        req = req.header(k, v);
+    }
+
+    let resp = req.send().await.with_context(|| format!("POST {url}"))?;
+    let status = resp.status().as_u16();
+    if !(200..300).contains(&status) {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(HttpError { status, body: text }.into());
+    }
+
+    let mut content = String::new();
+    let mut tool_calls: Vec<ToolCall> = Vec::new();
+    // tool_calls 增量按 index 累积：index -> (id, name, arguments)
+    let mut partial: std::collections::HashMap<usize, (String, String, String)> =
+        std::collections::HashMap::new();
+    let mut usage = None;
+
+    let mut stream = resp.bytes_stream();
+    let mut buf = String::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("reading stream chunk")?;
+        buf.push_str(&String::from_utf8_lossy(&chunk));
+        // 逐行处理完整行
+        while let Some(pos) = buf.find('\n') {
+            let line: String = buf.drain(..=pos).collect();
+            let line = line.trim_end_matches(['\n', '\r']).to_string();
+            let Some(data) = line.strip_prefix("data:") else { continue };
+            let data = data.trim();
+            if data == "[DONE]" {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
+            if let Some(err) = v.get("error") {
+                return Err(anyhow!("upstream stream error: {err}"));
+            }
+            if let Some(u) = v.get("usage") {
+                usage = Some(Usage {
+                    prompt_tokens: u.get("prompt_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
+                    completion_tokens: u.get("completion_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
+                });
+            }
+            let Some(choice) = v.pointer("/choices/0") else { continue };
+            if let Some(s) = choice.pointer("/delta/content").and_then(|c| c.as_str()) {
+                if !s.is_empty() {
+                    content.push_str(s);
+                    let _ = tx.send(StreamChunk::Delta(s.to_string())).await;
+                }
+            }
+            // 工具调用增量
+            if let Some(arr) = choice.pointer("/delta/tool_calls").and_then(|t| t.as_array()) {
+                for tc in arr {
+                    let idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                    let entry = partial.entry(idx).or_insert_with(|| (String::new(), String::new(), String::new()));
+                    if let Some(id) = tc.get("id").and_then(|x| x.as_str()) {
+                        entry.0.push_str(id);
+                    }
+                    if let Some(f) = tc.get("function") {
+                        if let Some(n) = f.get("name").and_then(|x| x.as_str()) {
+                            entry.1.push_str(n);
+                        }
+                        if let Some(a) = f.get("arguments").and_then(|x| x.as_str()) {
+                            entry.2.push_str(a);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 汇总工具调用（按 index 顺序）
+    let mut idxs: Vec<usize> = partial.keys().copied().collect();
+    idxs.sort_unstable();
+    for i in idxs {
+        let (id, name, args) = &partial[&i];
+        if name.is_empty() {
+            continue;
+        }
+        let call = ToolCall {
+            id: if id.is_empty() { format!("call_{i}") } else { id.clone() },
+            name: name.clone(),
+            arguments: if args.is_empty() { "{}".to_string() } else { args.clone() },
+        };
+        let _ = tx.send(StreamChunk::ToolCall(call.clone())).await;
+        tool_calls.push(call);
+    }
+    let _ = tx.send(StreamChunk::Done).await;
+
+    Ok(ChatResponse { content, tool_calls, usage })
+}
+
 /// 发送一次 chat/completions 请求。
 pub async fn post_chat(
     client: &reqwest::Client,
@@ -149,5 +263,16 @@ impl ModelProvider for OpenAiCompat {
     async fn complete(&self, model: &str, messages: &[ChatMessage], tools: &[ToolSpec]) -> Result<ChatResponse> {
         let body = build_body(model, messages, tools);
         post_chat(&self.client, &self.base_url, &self.api_key, &self.extra_headers, &body).await
+    }
+
+    async fn stream(
+        &self,
+        model: &str,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+        tx: mpsc::Sender<crate::model::StreamChunk>,
+    ) -> Result<ChatResponse> {
+        let body = build_body(model, messages, tools);
+        post_chat_stream(&self.client, &self.base_url, &self.api_key, &self.extra_headers, &body, &tx).await
     }
 }

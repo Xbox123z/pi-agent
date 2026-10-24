@@ -102,6 +102,11 @@ impl AgentHooks for CliHooks {
             _ => false,
         }
     }
+    async fn on_delta(&self, text: &str) {
+        // 打字机：逐分片写出并立即刷新
+        print!("{text}");
+        let _ = std::io::stdout().flush();
+    }
     async fn on_text(&self, text: &str) {
         println!("{text}");
     }
@@ -174,13 +179,13 @@ async fn main() -> Result<()> {
     match cli.cmd {
         Cmd::Run { goal, model, yes, max_steps } => {
             let mut agent = build_agent(model, yes, max_steps).await?;
-            let hooks = CliHooks { auto_yes: yes };
+            let hooks = std::sync::Arc::new(CliHooks { auto_yes: yes });
             // on_text 钩子已实时打印模型输出，这里只取最终返回值以传播错误
-            let _ = agent.run(&goal, &hooks).await?;
+            let _ = agent.run(&goal, hooks).await?;
         }
         Cmd::Chat { model, yes } => {
             let mut agent = build_agent(model.clone(), yes, 64).await?;
-            let hooks = CliHooks { auto_yes: yes };
+            let hooks = std::sync::Arc::new(CliHooks { auto_yes: yes });
             println!("\x1b[1mPi Agent\x1b[0m — interactive chat. \x1b[90m/model <name> 切换模型, /quit 退出\x1b[0m");
             println!("\x1b[90mcurrent model: {}\x1b[0m", agent.model);
             let mut rl = rustyline::DefaultEditor::new()?;
@@ -209,7 +214,7 @@ async fn main() -> Result<()> {
                     }
                     _ => {}
                 }
-                match agent.run(&input, &hooks).await {
+                match agent.run(&input, hooks.clone()).await {
                     Ok(_) => {}
                     Err(e) => eprintln!("\x1b[31merror:\x1b[0m {e:#}"),
                 }

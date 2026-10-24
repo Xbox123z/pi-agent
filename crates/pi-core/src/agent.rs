@@ -15,7 +15,9 @@ use crate::tools::{Policy, ToolContext, ToolRegistry};
 pub trait AgentHooks: Send + Sync {
     /// 工具需要确认时调用；返回 true 表示放行。
     async fn confirm(&self, tool: &str, args: &serde_json::Value) -> bool;
-    /// 模型产出文本增量（完整段）。
+    /// 模型产出文本增量（流式打字机的每个分片）。
+    async fn on_delta(&self, _text: &str) {}
+    /// 模型产出文本（完整段，非流式或流式结束后的整段）。
     async fn on_text(&self, _text: &str) {}
     /// 工具执行完成。
     async fn on_tool(&self, _name: &str, _ok: bool, _preview: &str) {}
@@ -33,7 +35,7 @@ pub struct Agent {
 }
 
 impl Agent {
-    pub async fn run(&mut self, goal: &str, hooks: &dyn AgentHooks) -> Result<String> {
+    pub async fn run(&mut self, goal: &str, hooks: Arc<dyn AgentHooks>) -> Result<String> {
         if self.router.is_empty() {
             return Err(anyhow!(
                 "no model provider configured — set PI_BASE_URL/PI_API_KEY or enable the pi-pool plugin"
@@ -52,9 +54,29 @@ impl Agent {
 
             let (provider, model) = self.router.resolve(&self.model)?;
             let specs = self.tools.specs();
-            let resp = provider.complete(&model, &messages, &specs).await;
+            // 流式优先：开一个 channel，边收增量边通过 hooks 打印（打字机效果）
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<crate::model::StreamChunk>(256);
+            let collected = Arc::new(tokio::sync::Mutex::new(String::new()));
+            let collected2 = collected.clone();
+            let hooks2 = hooks.clone();
+            let pump = tokio::spawn(async move {
+                use crate::model::StreamChunk;
+                while let Some(ch) = rx.recv().await {
+                    match ch {
+                        StreamChunk::Delta(d) => {
+                            collected2.lock().await.push_str(&d);
+                            hooks2.on_delta(&d).await;   // 打字机：逐分片输出
+                        }
+                        StreamChunk::Done => break,
+                        StreamChunk::ToolCall(_) => {}
+                    }
+                }
+            });
 
-            let resp = match resp {
+            let streamed = provider.stream(&model, &messages, &specs, tx).await;
+            let _ = pump.await;
+
+            let resp = match streamed {
                 Ok(r) => r,
                 Err(e) => {
                     // 出错时把错误反馈给模型一次，仍失败则终止。
@@ -66,6 +88,9 @@ impl Agent {
                 }
             };
 
+            // 流式期间累积的文本（用于 hooks 之外的调用方）
+            let _streamed_text = collected.lock().await.clone();
+
             // 记录 assistant 消息
             self.memory.push(ChatMessage {
                 role: Role::Assistant,
@@ -74,8 +99,8 @@ impl Agent {
                 tool_call_id: None,
             });
 
+            // 流式路径已通过 on_delta 逐片输出，这里只保留最终文本，避免重复打印
             if !resp.content.is_empty() {
-                hooks.on_text(&resp.content).await;
                 final_text = resp.content.clone();
             }
 
@@ -86,7 +111,7 @@ impl Agent {
 
             // 执行工具调用
             for call in &resp.tool_calls {
-                let result = self.execute_tool(call, hooks).await;
+                let result = self.execute_tool(call, hooks.as_ref()).await;
                 let (text, ok) = match &result {
                     Ok(t) => (t.clone(), true),
                     Err(e) => (format!("[tool error] {e:#}"), false),

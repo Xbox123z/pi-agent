@@ -190,6 +190,40 @@ impl PoolProvider {
         Err(last_err)
     }
 
+    /// free-auto 的流式版本：逐个账号尝试流式请求。
+    async fn stream_auto(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+        tx: &tokio::sync::mpsc::Sender<pi_core::model::StreamChunk>,
+    ) -> Result<ChatResponse> {
+        let idxs = self.order(None);
+        if idxs.is_empty() {
+            return Err(anyhow!("pool: no available accounts (all cooling down or empty). Run `pi pool list` / `pi pool add`."));
+        }
+        let mut last_err = anyhow!("pool: no attempt made");
+        for idx in idxs {
+            let (base, key, model) = {
+                let states = self.states.lock().unwrap();
+                let a = &states[idx].account;
+                let model = a
+                    .models
+                    .iter()
+                    .find(|m| m.contains("free"))
+                    .or_else(|| a.models.first())
+                    .cloned()
+                    .unwrap_or_else(|| "auto".to_string());
+                (a.base_url.clone(), a.api_key.clone(), model)
+            };
+            let body = openai::build_body(&model, messages, tools);
+            match openai::post_chat_stream(&self.client, &base, &key, &[], &body, tx).await {
+                Ok(r) => { self.mark_ok(idx); return Ok(r); }
+                Err(e) => last_err = e,
+            }
+        }
+        Err(last_err)
+    }
+
     async fn try_account(&self, idx: usize, base: &str, key: &str, body: &serde_json::Value) -> Result<ChatResponse> {
         let url = format!("{}/chat/completions", base.trim_end_matches('/'));
         let mut req = self.client.post(&url).json(body);
@@ -251,6 +285,36 @@ impl ModelProvider for PoolProvider {
             }
         }
         out
+    }
+
+    async fn stream(
+        &self,
+        model: &str,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+        tx: tokio::sync::mpsc::Sender<pi_core::model::StreamChunk>,
+    ) -> Result<ChatResponse> {
+        if model == "free-auto" {
+            return self.stream_auto(messages, tools, &tx).await;
+        }
+        let idxs = self.order(Some(model));
+        if idxs.is_empty() {
+            return Err(anyhow!("pool: no available account serves model `{model}`"));
+        }
+        let body = openai::build_body(model, messages, tools);
+        let mut last_err = anyhow!("pool: no attempt made");
+        for idx in idxs {
+            let (base, key) = {
+                let states = self.states.lock().unwrap();
+                let a = &states[idx].account;
+                (a.base_url.clone(), a.api_key.clone())
+            };
+            match openai::post_chat_stream(&self.client, &base, &key, &[], &body, &tx).await {
+                Ok(r) => { self.mark_ok(idx); return Ok(r); }
+                Err(e) => last_err = e,
+            }
+        }
+        Err(last_err)
     }
 
     async fn complete(&self, model: &str, messages: &[ChatMessage], tools: &[ToolSpec]) -> Result<ChatResponse> {
