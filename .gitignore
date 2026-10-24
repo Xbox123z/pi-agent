@@ -1,0 +1,6 @@
+/target
+**/*.rs.bk
+Cargo.lock
+.pi/
+pool.json
+*.log

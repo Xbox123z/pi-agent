@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = ["crates/pi-core", "crates/pi-cli", "plugins/pi-pool"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/Xbox123z/pi-agent"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+dirs = "5"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

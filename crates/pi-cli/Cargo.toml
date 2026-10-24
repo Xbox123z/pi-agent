@@ -1,0 +1,22 @@
+[package]
+name = "pi-cli"
+description = "Pi Agent command line interface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "pi"
+path = "src/main.rs"
+
+[dependencies]
+pi-core = { path = "../pi-core" }
+pi-pool = { path = "../../plugins/pi-pool" }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+clap.workspace = true
+dirs.workspace = true
+rustyline = "19"
+async-trait = "0.1"
