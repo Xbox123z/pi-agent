@@ -258,14 +258,16 @@ impl Tool for Shell {
     fn base_policy(&self) -> Policy { Policy::Ask }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
         let cmd = arg_str(&args, "command")?;
-        let out = if cfg!(windows) {
-            tokio::process::Command::new("cmd").args(["/C", &cmd])
+        let mut command = if cfg!(windows) {
+            let mut c = tokio::process::Command::new("cmd");
+            c.args(["/C", &cmd]);
+            c
         } else {
-            tokio::process::Command::new("sh").args(["-c", &cmd])
-        }
-        .current_dir(&ctx.cwd)
-        .output()
-        .await?;
+            let mut c = tokio::process::Command::new("sh");
+            c.args(["-c", &cmd]);
+            c
+        };
+        let out = command.current_dir(&ctx.cwd).output().await?;
         let mut text = String::from_utf8_lossy(&out.stdout).to_string();
         let err = String::from_utf8_lossy(&out.stderr);
         if !err.is_empty() {
