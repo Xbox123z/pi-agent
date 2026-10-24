@@ -26,6 +26,10 @@
 
 ## 快速开始
 
+**编译前提**：Rust 1.70+，且需要 C/C++ linker（Windows 装
+[VS Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)；
+macOS `xcode-select --install`；Linux `build-essential`）。
+
 ```bash
 cargo build --release
 ./target/release/pi pool presets        # 看看支持哪些免费上游
