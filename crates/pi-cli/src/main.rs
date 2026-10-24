@@ -254,9 +254,9 @@ async fn main() -> Result<()> {
                 }
             }
             PoolCmd::Presets => {
-                println!("{:<12} {:<34} {}", "id", "signup", "env var");
+                println!("{:<12} {:<34} {:<22} {}", "id", "signup", "env var", "models");
                 for p in pi_pool::presets::PRESETS {
-                    println!("{:<12} {:<34} {}", p.id, p.signup, p.env_key);
+                    println!("{:<12} {:<34} {:<22} {}", p.id, p.signup, p.env_key, p.models.len());
                 }
             }
         },
