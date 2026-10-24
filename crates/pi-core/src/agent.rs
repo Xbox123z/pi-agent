@@ -113,10 +113,8 @@ impl Agent {
         let policy = self.tools.policy_for(&call.name, &self.policy);
         match policy {
             Policy::Deny => return Err(anyhow!("tool `{}` denied by policy", call.name)),
-            Policy::Ask if !self.session.auto_yes => {
-                if !hooks.confirm(&call.name, &args).await {
-                    return Err(anyhow!("tool `{}` rejected by user", call.name));
-                }
+            Policy::Ask if !self.session.auto_yes && !hooks.confirm(&call.name, &args).await => {
+                return Err(anyhow!("tool `{}` rejected by user", call.name));
             }
             _ => {}
         }
